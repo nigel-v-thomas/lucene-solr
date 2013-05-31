@@ -20,16 +20,21 @@ package org.apache.lucene.codecs.lucene42;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.SegmentWriteState;
+import org.apache.lucene.store.ByteArrayDataOutput;
 import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.IntsRef;
+import org.apache.lucene.util.MathUtil;
 import org.apache.lucene.util.fst.Builder;
 import org.apache.lucene.util.fst.FST;
 import org.apache.lucene.util.fst.FST.INPUT_TYPE;
@@ -45,7 +50,8 @@ import org.apache.lucene.util.packed.PackedInts.FormatAndBits;
  */
 class Lucene42DocValuesConsumer extends DocValuesConsumer {
   static final int VERSION_START = 0;
-  static final int VERSION_CURRENT = VERSION_START;
+  static final int VERSION_GCD_COMPRESSION = 1;
+  static final int VERSION_CURRENT = VERSION_GCD_COMPRESSION;
   
   static final byte NUMBER = 0;
   static final byte BYTES = 1;
@@ -56,6 +62,7 @@ class Lucene42DocValuesConsumer extends DocValuesConsumer {
   static final byte DELTA_COMPRESSED = 0;
   static final byte TABLE_COMPRESSED = 1;
   static final byte UNCOMPRESSED = 2;
+  static final byte GCD_COMPRESSED = 3;
 
   final IndexOutput data, meta;
   final int maxDoc;
@@ -79,27 +86,53 @@ class Lucene42DocValuesConsumer extends DocValuesConsumer {
       }
     }
   }
-  
+
   @Override
   public void addNumericField(FieldInfo field, Iterable<Number> values) throws IOException {
+    addNumericField(field, values, true);
+  }
+
+  void addNumericField(FieldInfo field, Iterable<Number> values, boolean optimizeStorage) throws IOException {
     meta.writeVInt(field.number);
     meta.writeByte(NUMBER);
     meta.writeLong(data.getFilePointer());
     long minValue = Long.MAX_VALUE;
     long maxValue = Long.MIN_VALUE;
+    long gcd = 0;
     // TODO: more efficient?
-    HashSet<Long> uniqueValues = new HashSet<Long>();
-    for(Number nv : values) {
-      long v = nv.longValue();
-      minValue = Math.min(minValue, v);
-      maxValue = Math.max(maxValue, v);
-      if (uniqueValues != null) {
-        if (uniqueValues.add(v)) {
-          if (uniqueValues.size() > 256) {
-            uniqueValues = null;
+    HashSet<Long> uniqueValues = null;
+    if (optimizeStorage) {
+      uniqueValues = new HashSet<>();
+
+      long count = 0;
+      for (Number nv : values) {
+        final long v = nv.longValue();
+
+        if (gcd != 1) {
+          if (v < Long.MIN_VALUE / 2 || v > Long.MAX_VALUE / 2) {
+            // in that case v - minValue might overflow and make the GCD computation return
+            // wrong results. Since these extreme values are unlikely, we just discard
+            // GCD computation for them
+            gcd = 1;
+          } else if (count != 0) { // minValue needs to be set first
+            gcd = MathUtil.gcd(gcd, v - minValue);
           }
         }
+
+        minValue = Math.min(minValue, v);
+        maxValue = Math.max(maxValue, v);
+
+        if (uniqueValues != null) {
+          if (uniqueValues.add(v)) {
+            if (uniqueValues.size() > 256) {
+              uniqueValues = null;
+            }
+          }
+        }
+
+        ++count;
       }
+      assert count == maxDoc;
     }
 
     if (uniqueValues != null) {
@@ -131,6 +164,18 @@ class Lucene42DocValuesConsumer extends DocValuesConsumer {
         }
         writer.finish();
       }
+    } else if (gcd != 0 && gcd != 1) {
+      meta.writeByte(GCD_COMPRESSED);
+      meta.writeVInt(PackedInts.VERSION_CURRENT);
+      data.writeLong(minValue);
+      data.writeLong(gcd);
+      data.writeVInt(BLOCK_SIZE);
+
+      final BlockPackedWriter writer = new BlockPackedWriter(data, BLOCK_SIZE);
+      for (Number nv : values) {
+        writer.add((nv.longValue() - minValue) / gcd);
+      }
+      writer.finish();
     } else {
       meta.writeByte(DELTA_COMPRESSED); // delta-compressed
 
@@ -195,13 +240,8 @@ class Lucene42DocValuesConsumer extends DocValuesConsumer {
       writer.finish();
     }
   }
-
-  @Override
-  public void addSortedField(FieldInfo field, Iterable<BytesRef> values, Iterable<Number> docToOrd) throws IOException {
-    // write the ordinals as numerics
-    addNumericField(field, docToOrd);
-    
-    // write the values as FST
+  
+  private void writeFST(FieldInfo field, Iterable<BytesRef> values) throws IOException {
     meta.writeVInt(field.number);
     meta.writeByte(FST);
     meta.writeLong(data.getFilePointer());
@@ -214,7 +254,94 @@ class Lucene42DocValuesConsumer extends DocValuesConsumer {
       ord++;
     }
     FST<Long> fst = builder.finish();
-    fst.save(data);
-    meta.writeVInt((int)ord);
+    if (fst != null) {
+      fst.save(data);
+    }
+    meta.writeVLong(ord);
+  }
+
+  @Override
+  public void addSortedField(FieldInfo field, Iterable<BytesRef> values, Iterable<Number> docToOrd) throws IOException {
+    // write the ordinals as numerics
+    addNumericField(field, docToOrd, false);
+    
+    // write the values as FST
+    writeFST(field, values);
+  }
+
+  // note: this might not be the most efficient... but its fairly simple
+  @Override
+  public void addSortedSetField(FieldInfo field, Iterable<BytesRef> values, final Iterable<Number> docToOrdCount, final Iterable<Number> ords) throws IOException {
+    // write the ordinals as a binary field
+    addBinaryField(field, new Iterable<BytesRef>() {
+      @Override
+      public Iterator<BytesRef> iterator() {
+        return new SortedSetIterator(docToOrdCount.iterator(), ords.iterator());
+      }
+    });
+      
+    // write the values as FST
+    writeFST(field, values);
+  }
+  
+  // per-document vint-encoded byte[]
+  static class SortedSetIterator implements Iterator<BytesRef> {
+    byte[] buffer = new byte[10];
+    ByteArrayDataOutput out = new ByteArrayDataOutput();
+    BytesRef ref = new BytesRef();
+    
+    final Iterator<Number> counts;
+    final Iterator<Number> ords;
+    
+    SortedSetIterator(Iterator<Number> counts, Iterator<Number> ords) {
+      this.counts = counts;
+      this.ords = ords;
+    }
+    
+    @Override
+    public boolean hasNext() {
+      return counts.hasNext();
+    }
+
+    @Override
+    public BytesRef next() {
+      if (!hasNext()) {
+        throw new NoSuchElementException();
+      }
+      
+      int count = counts.next().intValue();
+      int maxSize = count*9; // worst case
+      if (maxSize > buffer.length) {
+        buffer = ArrayUtil.grow(buffer, maxSize);
+      }
+      
+      try {
+        encodeValues(count);
+      } catch (IOException bogus) {
+        throw new RuntimeException(bogus);
+      }
+      
+      ref.bytes = buffer;
+      ref.offset = 0;
+      ref.length = out.getPosition();
+
+      return ref;
+    }
+    
+    // encodes count values to buffer
+    private void encodeValues(int count) throws IOException {
+      out.reset(buffer);
+      long lastOrd = 0;
+      for (int i = 0; i < count; i++) {
+        long ord = ords.next().longValue();
+        out.writeVLong(ord - lastOrd);
+        lastOrd = ord;
+      }
+    }
+
+    @Override
+    public void remove() {
+      throw new UnsupportedOperationException();
+    }
   }
 }

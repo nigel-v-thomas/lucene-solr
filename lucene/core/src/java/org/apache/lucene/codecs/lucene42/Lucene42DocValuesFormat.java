@@ -34,7 +34,7 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
 /**
  * Lucene 4.2 DocValues format.
  * <p>
- * Encodes the three per-document value types (Numeric,Binary,Sorted) with five basic strategies.
+ * Encodes the four per-document value types (Numeric,Binary,Sorted,SortedSet) with seven basic strategies.
  * <p>
  * <ul>
  *    <li>Delta-compressed Numerics: per-document integers written in blocks of 4096. For each block
@@ -44,6 +44,8 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *    <li>Uncompressed Numerics: when all values would fit into a single byte, and the 
  *        <code>acceptableOverheadRatio</code> would pack values into 8 bits per value anyway, they
  *        are written as absolute values (with no indirection or packing) for performance.
+ *    <li>GCD-compressed Numerics: when all numbers share a common divisor, such as dates, the greatest
+ *        common denominator (GCD) is computed, and quotients are stored using Delta-compressed Numerics.
  *    <li>Fixed-width Binary: one large concatenated byte[] is written, along with the fixed length.
  *        Each document's value can be addressed by maxDoc*length. 
  *    <li>Variable-width Binary: one large concatenated byte[] is written, along with end addresses 
@@ -51,7 +53,9 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *        start for the block, and the average (expected) delta per entry. For each document the 
  *        deviation from the delta (actual - expected) is written.
  *    <li>Sorted: an FST mapping deduplicated terms to ordinals is written, along with the per-document
- *        ordinals written using one of the numeric stratgies above.
+ *        ordinals written using one of the numeric strategies above.
+ *    <li>SortedSet: an FST mapping deduplicated terms to ordinals is written, along with the per-document
+ *        ordinal list written using one of the binary strategies above.  
  * </ul>
  * <p>
  * Files:
@@ -77,6 +81,8 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *   </ul>
  *   <p>Sorted fields have two entries: a SortedEntry with the FST metadata,
  *      and an ordinary NumericEntry for the document-to-ord metadata.</p>
+ *   <p>SortedSet fields have two entries: a SortedEntry with the FST metadata,
+ *      and an ordinary BinaryEntry for the document-to-ord-list metadata.</p>
  *   <p>FieldNumber of -1 indicates the end of metadata.</p>
  *   <p>EntryType is a 0 (NumericEntry), 1 (BinaryEntry, or 2 (SortedEntry)</p>
  *   <p>DataOffset is the pointer to the start of the data in the DocValues data (.dvd)</p>
@@ -89,6 +95,8 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *         <li>2 --&gt; uncompressed. When the <code>acceptableOverheadRatio</code> parameter would upgrade the number
  *             of bits required to 8, and all values fit in a byte, these are written as absolute binary values
  *             for performance.
+ *         <li>3 --&gt, gcd-compressed. When all integers share a common divisor, only quotients are stored
+ *             using blocks of delta-encoded ints.
  *      </ul>
  *   <p>MinLength and MaxLength represent the min and max byte[] value lengths for Binary values.
  *      If they are equal, then all values are of a fixed size, and can be addressed as DataOffset + (docID * length).
@@ -99,7 +107,7 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *   <p>For DocValues field, this stores the actual per-document data (the heavy-lifting)</p>
  *   <p>DocValues data (.dvd) --&gt; Header,&lt;NumericData | BinaryData | SortedData&gt;<sup>NumFields</sup></p>
  *   <ul>
- *     <li>NumericData --&gt; DeltaCompressedNumerics | TableCompressedNumerics | UncompressedNumerics</li>
+ *     <li>NumericData --&gt; DeltaCompressedNumerics | TableCompressedNumerics | UncompressedNumerics | GCDCompressedNumerics</li>
  *     <li>BinaryData --&gt;  {@link DataOutput#writeByte Byte}<sup>DataLength</sup>,Addresses</li>
  *     <li>SortedData --&gt; {@link FST FST&lt;Int64&gt;}</li>
  *     <li>DeltaCompressedNumerics --&gt; {@link BlockPackedWriter BlockPackedInts(blockSize=4096)}</li>
@@ -107,6 +115,8 @@ import org.apache.lucene.util.packed.BlockPackedWriter;
  *     <li>UncompressedNumerics --&gt; {@link DataOutput#writeByte Byte}<sup>maxdoc</sup></li>
  *     <li>Addresses --&gt; {@link MonotonicBlockPackedWriter MonotonicBlockPackedInts(blockSize=4096)}</li>
  *   </ul>
+ *   <p>SortedSet entries store the list of ordinals in their BinaryData as a
+ *      sequences of increasing {@link DataOutput#writeVLong vLong}s, delta-encoded.</p>       
  * </ol>
  */
 public final class Lucene42DocValuesFormat extends DocValuesFormat {

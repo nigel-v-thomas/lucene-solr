@@ -47,7 +47,7 @@ import org.apache.lucene.util.Bits;
  * same order to the other indexes. <em>Failure to do so will result in
  * undefined behavior</em>.
  */
-public final class ParallelAtomicReader extends AtomicReader {
+public class ParallelAtomicReader extends AtomicReader {
   private final FieldInfos fieldInfos;
   private final ParallelFields fields = new ParallelFields();
   private final AtomicReader[] parallelReaders, storedFieldsReaders;
@@ -214,12 +214,6 @@ public final class ParallelAtomicReader extends AtomicReader {
   }
   
   @Override
-  public boolean hasDeletions() {
-    ensureOpen();
-    return hasDeletions;
-  }
-  
-  @Override
   public void document(int docID, StoredFieldVisitor visitor) throws IOException {
     ensureOpen();
     for (final AtomicReader reader: storedFieldsReaders) {
@@ -282,6 +276,13 @@ public final class ParallelAtomicReader extends AtomicReader {
     ensureOpen();
     AtomicReader reader = fieldToReader.get(field);
     return reader == null ? null : reader.getSortedDocValues(field);
+  }
+
+  @Override
+  public SortedSetDocValues getSortedSetDocValues(String field) throws IOException {
+    ensureOpen();
+    AtomicReader reader = fieldToReader.get(field);
+    return reader == null ? null : reader.getSortedSetDocValues(field);
   }
 
   @Override

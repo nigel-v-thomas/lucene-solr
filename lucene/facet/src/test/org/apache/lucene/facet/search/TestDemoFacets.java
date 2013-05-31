@@ -21,15 +21,21 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
+import org.apache.lucene.analysis.MockAnalyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.facet.FacetTestCase;
 import org.apache.lucene.facet.FacetTestUtils;
 import org.apache.lucene.facet.index.FacetFields;
+import org.apache.lucene.facet.params.CategoryListParams;
+import org.apache.lucene.facet.params.FacetIndexingParams;
 import org.apache.lucene.facet.params.FacetSearchParams;
 import org.apache.lucene.facet.taxonomy.CategoryPath;
 import org.apache.lucene.facet.taxonomy.TaxonomyReader;
+import org.apache.lucene.facet.taxonomy.TaxonomyWriter;
 import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyReader;
 import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyWriter;
 import org.apache.lucene.facet.util.PrintTaxonomyStats;
@@ -37,7 +43,11 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.RandomIndexWriter;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.similarities.DefaultSimilarity;
+import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
+import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.util.BytesRef;
 
 public class TestDemoFacets extends FacetTestCase {
 
@@ -134,4 +144,108 @@ public class TestDemoFacets extends FacetTestCase {
     taxoDir.close();
   }
 
+  public void testReallyNoNormsForDrillDown() throws Exception {
+    Directory dir = newDirectory();
+    Directory taxoDir = newDirectory();
+    IndexWriterConfig iwc = newIndexWriterConfig(TEST_VERSION_CURRENT, new MockAnalyzer(random()));
+    iwc.setSimilarity(new PerFieldSimilarityWrapper() {
+        final Similarity sim = new DefaultSimilarity();
+
+        @Override
+        public Similarity get(String name) {
+          assertEquals("field", name);
+          return sim;
+        }
+      });
+    RandomIndexWriter writer = new RandomIndexWriter(random(), dir, iwc);
+    TaxonomyWriter taxoWriter = new DirectoryTaxonomyWriter(taxoDir, IndexWriterConfig.OpenMode.CREATE);
+    FacetFields facetFields = new FacetFields(taxoWriter);      
+
+    Document doc = new Document();
+    doc.add(newTextField("field", "text", Field.Store.NO));
+    facetFields.addFields(doc, Collections.singletonList(new CategoryPath("a/path", '/')));
+    writer.addDocument(doc);
+    writer.close();
+    taxoWriter.close();
+    dir.close();
+    taxoDir.close();
+  }
+
+  public void testAllParents() throws Exception {
+    Directory dir = newDirectory();
+    Directory taxoDir = newDirectory();
+    RandomIndexWriter writer = new RandomIndexWriter(random(), dir);
+    DirectoryTaxonomyWriter taxoWriter = new DirectoryTaxonomyWriter(taxoDir, IndexWriterConfig.OpenMode.CREATE);
+
+    CategoryListParams clp = new CategoryListParams("$facets") {
+        @Override
+        public OrdinalPolicy getOrdinalPolicy(String fieldName) {
+          return OrdinalPolicy.ALL_PARENTS;
+        }
+      };
+    FacetIndexingParams fip = new FacetIndexingParams(clp);
+
+    FacetFields facetFields = new FacetFields(taxoWriter, fip);
+
+    Document doc = new Document();
+    doc.add(newTextField("field", "text", Field.Store.NO));
+    facetFields.addFields(doc, Collections.singletonList(new CategoryPath("a/path", '/')));
+    writer.addDocument(doc);
+
+    // NRT open
+    IndexSearcher searcher = newSearcher(writer.getReader());
+    writer.close();
+
+    // NRT open
+    TaxonomyReader taxoReader = new DirectoryTaxonomyReader(taxoWriter);
+    taxoWriter.close();
+    
+    FacetSearchParams fsp = new FacetSearchParams(fip,
+                                                  new CountFacetRequest(new CategoryPath("a", '/'), 10));
+
+    // Aggregate the facet counts:
+    FacetsCollector c = FacetsCollector.create(fsp, searcher.getIndexReader(), taxoReader);
+
+    // MatchAllDocsQuery is for "browsing" (counts facets
+    // for all non-deleted docs in the index); normally
+    // you'd use a "normal" query, and use MultiCollector to
+    // wrap collecting the "normal" hits and also facets:
+    searcher.search(new MatchAllDocsQuery(), c);
+    List<FacetResult> results = c.getFacetResults();
+    assertEquals(1, results.size());
+    assertEquals(1, (int) results.get(0).getFacetResultNode().value);
+
+    // LUCENE-4913:
+    for(FacetResultNode childNode : results.get(0).getFacetResultNode().subResults) {
+      assertTrue(childNode.ordinal != 0);
+    }
+
+    searcher.getIndexReader().close();
+    taxoReader.close();
+    dir.close();
+    taxoDir.close();
+  }
+
+  public void testLabelWithDelimiter() throws Exception {
+    Directory dir = newDirectory();
+    Directory taxoDir = newDirectory();
+    RandomIndexWriter writer = new RandomIndexWriter(random(), dir);
+    DirectoryTaxonomyWriter taxoWriter = new DirectoryTaxonomyWriter(taxoDir, IndexWriterConfig.OpenMode.CREATE);
+
+    FacetFields facetFields = new FacetFields(taxoWriter);
+
+    Document doc = new Document();
+    doc.add(newTextField("field", "text", Field.Store.NO));
+    BytesRef br = new BytesRef(new byte[] {(byte) 0xee, (byte) 0x92, (byte) 0xaa, (byte) 0xef, (byte) 0x9d, (byte) 0x89});
+    facetFields.addFields(doc, Collections.singletonList(new CategoryPath("dim/" + br.utf8ToString(), '/')));
+    try {
+      writer.addDocument(doc);
+    } catch (IllegalArgumentException iae) {
+      // expected
+    }
+    writer.close();
+    taxoWriter.close();
+    dir.close();
+    taxoDir.close();
+  }
 }

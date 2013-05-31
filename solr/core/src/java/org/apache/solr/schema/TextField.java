@@ -19,8 +19,6 @@ package org.apache.solr.schema;
 
 import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.search.*;
-import org.apache.lucene.index.GeneralField;
-import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.StorableField;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
@@ -58,6 +56,7 @@ public class TextField extends FieldType {
    * @see #setMultiTermAnalyzer
    */
   protected Analyzer multiTermAnalyzer=null;
+  private boolean isExplicitMultiTermAnalyzer = false;
 
   @Override
   protected void init(IndexSchema schema, Map<String,String> args) {
@@ -138,7 +137,7 @@ public class TextField extends FieldType {
   }
 
   public static BytesRef analyzeMultiTerm(String field, String part, Analyzer analyzerIn) {
-    if (part == null) return null;
+    if (part == null || analyzerIn == null) return null;
 
     TokenStream source;
     try {
@@ -331,4 +330,11 @@ public class TextField extends FieldType {
 
   }
 
+  public void setIsExplicitMultiTermAnalyzer(boolean isExplicitMultiTermAnalyzer) {
+    this.isExplicitMultiTermAnalyzer = isExplicitMultiTermAnalyzer;
+  }
+
+  public boolean isExplicitMultiTermAnalyzer() {
+    return isExplicitMultiTermAnalyzer;
+  }
 }

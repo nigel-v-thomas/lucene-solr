@@ -22,9 +22,12 @@ import java.util.concurrent.locks.Lock;
 
 import org.apache.lucene.index.IndexWriter;
 import org.apache.solr.core.CoreContainer;
+import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.core.DirectoryFactory;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.util.RefCounted;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The state in this class can be easily shared between SolrCores across
@@ -32,10 +35,46 @@ import org.apache.solr.util.RefCounted;
  * 
  */
 public abstract class SolrCoreState {
+  public static Logger log = LoggerFactory.getLogger(SolrCoreState.class);
+  
+  protected boolean closed = false;
   private final Object deleteLock = new Object();
   
   public Object getUpdateLock() {
     return deleteLock;
+  }
+  
+  private int solrCoreStateRefCnt = 1;
+
+  public void increfSolrCoreState() {
+    synchronized (this) {
+      if (solrCoreStateRefCnt == 0) {
+        throw new IllegalStateException("IndexWriter has been closed");
+      }
+      solrCoreStateRefCnt++;
+    }
+  }
+  
+  public boolean decrefSolrCoreState(IndexWriterCloser closer) {
+    boolean close = false;
+    synchronized (this) {
+      solrCoreStateRefCnt--;
+      assert solrCoreStateRefCnt >= 0;
+      if (solrCoreStateRefCnt == 0) {
+        closed = true;
+        close = true;
+      }
+    }
+    
+    if (close) {
+      try {
+        log.info("Closing SolrCoreState");
+        close(closer);
+      } catch (Throwable t) {
+        log.error("Error closing SolrCoreState", t);
+      }
+    }
+    return close;
   }
   
   public abstract Lock getCommitLock();
@@ -47,7 +86,7 @@ public abstract class SolrCoreState {
    * @param rollback close IndexWriter if false, else rollback
    * @throws IOException If there is a low-level I/O error.
    */
-  public abstract void newIndexWriter(SolrCore core, boolean rollback, boolean forceNewDir) throws IOException;
+  public abstract void newIndexWriter(SolrCore core, boolean rollback) throws IOException;
   
   /**
    * Get the current IndexWriter. If a new IndexWriter must be created, use the
@@ -75,7 +114,7 @@ public abstract class SolrCoreState {
     public void closeWriter(IndexWriter writer) throws IOException;
   }
 
-  public abstract void doRecovery(CoreContainer cc, String name);
+  public abstract void doRecovery(CoreContainer cc, CoreDescriptor cd);
   
   public abstract void cancelRecovery();
 

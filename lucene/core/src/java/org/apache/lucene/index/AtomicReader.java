@@ -107,6 +107,33 @@ public abstract class AtomicReader extends IndexReader {
       return 0;
     }
   }
+  
+  @Override
+  public final long getSumDocFreq(String field) throws IOException {
+    final Terms terms = terms(field);
+    if (terms == null) {
+      return 0;
+    }
+    return terms.getSumDocFreq();
+  }
+  
+  @Override
+  public final int getDocCount(String field) throws IOException {
+    final Terms terms = terms(field);
+    if (terms == null) {
+      return 0;
+    }
+    return terms.getDocCount();
+  }
+  
+  @Override
+  public final long getSumTotalTermFreq(String field) throws IOException {
+    final Terms terms = terms(field);
+    if (terms == null) {
+      return 0;
+    }
+    return terms.getSumTotalTermFreq();
+  }
 
   /** This may return null if the field does not exist.*/
   public final Terms terms(String field) throws IOException {
@@ -174,6 +201,12 @@ public abstract class AtomicReader extends IndexReader {
    *  this field.  The returned instance should only be
    *  used by a single thread. */
   public abstract SortedDocValues getSortedDocValues(String field) throws IOException;
+  
+  /** Returns {@link SortedSetDocValues} for this field, or
+   *  null if no {@link SortedSetDocValues} were indexed for
+   *  this field.  The returned instance should only be
+   *  used by a single thread. */
+  public abstract SortedSetDocValues getSortedSetDocValues(String field) throws IOException;
 
   /** Returns {@link NumericDocValues} representing norms
    *  for this field, or null if no {@link NumericDocValues}

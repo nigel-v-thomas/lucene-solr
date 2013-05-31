@@ -52,6 +52,10 @@ public class CloudSolrServerTest extends AbstractFullDistribZkTestBase {
     
   }
   
+  protected String getCloudSolrConfig() {
+    return "solrconfig.xml";
+  }
+  
   @Override
   public String getSolrHome() {
     return SOLR_HOME;
@@ -81,7 +85,7 @@ public class CloudSolrServerTest extends AbstractFullDistribZkTestBase {
   public CloudSolrServerTest() {
     super();
     sliceCount = 2;
-    shardCount = 6;
+    shardCount = 4;
   }
   
   @Override
@@ -143,12 +147,6 @@ public class CloudSolrServerTest extends AbstractFullDistribZkTestBase {
   protected void indexr(Object... fields) throws Exception {
     SolrInputDocument doc = getDoc(fields);
     indexDoc(doc);
-  }
-
-  SolrInputDocument getDoc(Object... fields) throws Exception {
-    SolrInputDocument doc = new SolrInputDocument();
-    addFields(doc, fields);
-    return doc;
   }
 
 }

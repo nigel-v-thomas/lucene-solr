@@ -18,8 +18,9 @@ package org.apache.lucene.facet.search;
  */
 
 import java.io.IOException;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.lucene.facet.params.CategoryListParams;
 import org.apache.lucene.facet.params.FacetIndexingParams;
@@ -27,8 +28,11 @@ import org.apache.lucene.facet.taxonomy.CategoryPath;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.Filter;
+import org.apache.lucene.search.FilteredQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
@@ -49,7 +53,7 @@ import org.apache.lucene.search.TermQuery;
 public final class DrillDownQuery extends Query {
 
   /** Return a drill-down {@link Term} for a category. */
-  public static final Term term(FacetIndexingParams iParams, CategoryPath path) {
+  public static Term term(FacetIndexingParams iParams, CategoryPath path) {
     CategoryListParams clp = iParams.getCategoryListParams(path);
     char[] buffer = new char[path.fullPathLength()];
     iParams.drillDownTermText(path, buffer);
@@ -57,21 +61,50 @@ public final class DrillDownQuery extends Query {
   }
   
   private final BooleanQuery query;
-  private final Set<String> drillDownDims = new HashSet<String>();
+  private final Map<String,Integer> drillDownDims = new LinkedHashMap<String,Integer>();
+  final FacetIndexingParams fip;
 
-  private final FacetIndexingParams fip;
-
-  /* Used by clone() */
-  private DrillDownQuery(FacetIndexingParams fip, BooleanQuery query, Set<String> drillDownDims) {
+  /** Used by clone() */
+  DrillDownQuery(FacetIndexingParams fip, BooleanQuery query, Map<String,Integer> drillDownDims) {
     this.fip = fip;
     this.query = query.clone();
-    this.drillDownDims.addAll(drillDownDims);
+    this.drillDownDims.putAll(drillDownDims);
+  }
+
+  /** Used by DrillSideways */
+  DrillDownQuery(Filter filter, DrillDownQuery other) {
+    query = new BooleanQuery(true); // disable coord
+
+    BooleanClause[] clauses = other.query.getClauses();
+    if (clauses.length == other.drillDownDims.size()) {
+      throw new IllegalArgumentException("cannot apply filter unless baseQuery isn't null; pass ConstantScoreQuery instead");
+    }
+    assert clauses.length == 1+other.drillDownDims.size(): clauses.length + " vs " + (1+other.drillDownDims.size());
+    drillDownDims.putAll(other.drillDownDims);
+    query.add(new FilteredQuery(clauses[0].getQuery(), filter), Occur.MUST);
+    for(int i=1;i<clauses.length;i++) {
+      query.add(clauses[i].getQuery(), Occur.MUST);
+    }
+    fip = other.fip;
+  }
+
+  /** Used by DrillSideways */
+  DrillDownQuery(FacetIndexingParams fip, Query baseQuery, List<Query> clauses, Map<String,Integer> drillDownDims) {
+    this.fip = fip;
+    this.query = new BooleanQuery(true);
+    if (baseQuery != null) {
+      query.add(baseQuery, Occur.MUST);      
+    }
+    for(Query clause : clauses) {
+      query.add(clause, Occur.MUST);
+    }
+    this.drillDownDims.putAll(drillDownDims);
   }
 
   /**
-   * Creates a new {@link DrillDownQuery} without a base query, which means that
-   * you intend to perfor a pure browsing query (equivalent to using
-   * {@link MatchAllDocsQuery} as base.
+   * Creates a new {@link DrillDownQuery} without a base query, 
+   * to perform a pure browsing query (equivalent to using
+   * {@link MatchAllDocsQuery} as base).
    */
   public DrillDownQuery(FacetIndexingParams fip) {
     this(fip, null);
@@ -97,14 +130,14 @@ public final class DrillDownQuery extends Query {
    */
   public void add(CategoryPath... paths) {
     Query q;
+    if (paths[0].length == 0) {
+      throw new IllegalArgumentException("all CategoryPaths must have length > 0");
+    }
     String dim = paths[0].components[0];
-    if (drillDownDims.contains(dim)) {
+    if (drillDownDims.containsKey(dim)) {
       throw new IllegalArgumentException("dimension '" + dim + "' was already added");
     }
     if (paths.length == 1) {
-      if (paths[0].length == 0) {
-        throw new IllegalArgumentException("all CategoryPaths must have length > 0");
-      }
       q = new TermQuery(term(fip, paths[0]));
     } else {
       BooleanQuery bq = new BooleanQuery(true); // disable coord
@@ -120,11 +153,25 @@ public final class DrillDownQuery extends Query {
       }
       q = bq;
     }
-    drillDownDims.add(dim);
 
-    final ConstantScoreQuery drillDownQuery = new ConstantScoreQuery(q);
+    add(dim, q);
+  }
+
+  /** Expert: add a custom drill-down subQuery.  Use this
+   *  when you have a separate way to drill-down on the
+   *  dimension than the indexed facet ordinals. */
+  public void add(String dim, Query subQuery) {
+
+    // TODO: we should use FilteredQuery?
+
+    // So scores of the drill-down query don't have an
+    // effect:
+    final ConstantScoreQuery drillDownQuery = new ConstantScoreQuery(subQuery);
     drillDownQuery.setBoost(0.0f);
+
     query.add(drillDownQuery, Occur.MUST);
+
+    drillDownDims.put(dim, drillDownDims.size());
   }
 
   @Override
@@ -134,7 +181,9 @@ public final class DrillDownQuery extends Query {
   
   @Override
   public int hashCode() {
-    return query.hashCode();
+    final int prime = 31;
+    int result = super.hashCode();
+    return prime * result + query.hashCode();
   }
   
   @Override
@@ -144,7 +193,7 @@ public final class DrillDownQuery extends Query {
     }
     
     DrillDownQuery other = (DrillDownQuery) obj;
-    return query.equals(other.query);
+    return query.equals(other.query) && super.equals(other);
   }
   
   @Override
@@ -162,5 +211,12 @@ public final class DrillDownQuery extends Query {
   public String toString(String field) {
     return query.toString(field);
   }
-  
+
+  BooleanQuery getBooleanQuery() {
+    return query;
+  }
+
+  Map<String,Integer> getDims() {
+    return drillDownDims;
+  }
 }

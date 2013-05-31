@@ -17,6 +17,8 @@ package org.apache.solr.cloud;
  * limitations under the License.
  */
 
+import org.apache.solr.common.cloud.ZkStateReader;
+import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.params.SolrParams;
 
 public class CloudDescriptor {
@@ -25,9 +27,15 @@ public class CloudDescriptor {
   private SolrParams params;
   private String roles = null;
   private Integer numShards;
-  
+  private String nodeName = null;
+
+  /* shardRange and shardState are used once-only during sub shard creation for shard splits
+   * Use the values from {@link Slice} instead */
+  volatile String shardRange = null;
+  volatile String shardState = Slice.ACTIVE;
+
   volatile boolean isLeader = false;
-  volatile String lastPublished;
+  volatile String lastPublished = ZkStateReader.ACTIVE;
   
   public String getLastPublished() {
     return lastPublished;
@@ -78,5 +86,28 @@ public class CloudDescriptor {
   public void setNumShards(int numShards) {
     this.numShards = numShards;
   }
+  
+  public String getCoreNodeName() {
+    return nodeName;
+  }
 
+  public void setCoreNodeName(String nodeName) {
+    this.nodeName = nodeName;
+  }
+
+  public String getShardRange() {
+    return shardRange;
+  }
+
+  public void setShardRange(String shardRange) {
+    this.shardRange = shardRange;
+  }
+
+  public String getShardState() {
+    return shardState;
+  }
+
+  public void setShardState(String shardState) {
+    this.shardState = shardState;
+  }
 }

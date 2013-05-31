@@ -94,7 +94,7 @@ public class StandardFacetsAccumulator extends FacetsAccumulator {
 
   private Object accumulateGuard;
 
-  private double complementThreshold;
+  private double complementThreshold = DEFAULT_COMPLEMENT_THRESHOLD;
   
   public StandardFacetsAccumulator(FacetSearchParams searchParams, IndexReader indexReader, 
       TaxonomyReader taxonomyReader) {
@@ -197,7 +197,9 @@ public class StandardFacetsAccumulator extends FacetsAccumulator {
         PartitionsFacetResultsHandler frHndlr = createFacetResultsHandler(fr);
         IntermediateFacetResult tmpResult = fr2tmpRes.get(fr);
         if (tmpResult == null) {
-          continue; // do not add a null to the list.
+          // Add empty FacetResult:
+          res.add(emptyResult(taxonomyReader.getOrdinal(fr.categoryPath), fr));
+          continue;
         }
         FacetResult facetRes = frHndlr.renderFacetResult(tmpResult);
         // final labeling if allowed (because labeling is a costly operation)

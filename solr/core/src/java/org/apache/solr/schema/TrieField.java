@@ -17,7 +17,10 @@
 package org.apache.solr.schema;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -29,13 +32,20 @@ import org.apache.lucene.document.FieldType.NumericType;
 import org.apache.lucene.document.FloatField;
 import org.apache.lucene.document.IntField;
 import org.apache.lucene.document.LongField;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.StorableField;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.DoubleFieldSource;
 import org.apache.lucene.queries.function.valuesource.FloatFieldSource;
 import org.apache.lucene.queries.function.valuesource.IntFieldSource;
 import org.apache.lucene.queries.function.valuesource.LongFieldSource;
-import org.apache.lucene.search.*;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.FieldCache;
+import org.apache.lucene.search.FieldCacheRangeFilter;
+import org.apache.lucene.search.NumericRangeQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CharsRef;
 import org.apache.lucene.util.NumericUtils;
@@ -101,8 +111,7 @@ public class TrieField extends PrimitiveFieldType {
                 "Invalid type specified in schema.xml for field: " + args.get("name"), e);
       }
     }
-  
-    
+
     CharFilterFactory[] filterFactories = new CharFilterFactory[0];
     TokenFilterFactory[] tokenFilterFactories = new TokenFilterFactory[0];
     analyzer = new TokenizerChain(filterFactories, new TrieTokenizerFactory(type, precisionStep), tokenFilterFactories);
@@ -237,45 +246,112 @@ public class TrieField extends PrimitiveFieldType {
   }
 
   @Override
-  public Query getRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive, boolean maxInclusive) {
-    int ps = precisionStep;
-    Query query = null;
+  public NumericType getNumericType() {
     switch (type) {
       case INTEGER:
-        query = NumericRangeQuery.newIntRange(field.getName(), ps,
+        return NumericType.INT;
+      case LONG:
+      case DATE:
+        return NumericType.LONG;
+      case FLOAT:
+        return NumericType.FLOAT;
+      case DOUBLE:
+        return NumericType.DOUBLE;
+      default:
+        throw new AssertionError();
+    }
+  }
+
+  @Override
+  public Query getRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive, boolean maxInclusive) {
+    if (field.multiValued() && field.hasDocValues() && !field.indexed()) {
+      // for the multi-valued dv-case, the default rangeimpl over toInternal is correct
+      return super.getRangeQuery(parser, field, min, max, minInclusive, maxInclusive);
+    }
+    int ps = precisionStep;
+    Query query = null;
+    final boolean matchOnly = field.hasDocValues() && !field.indexed();
+    switch (type) {
+      case INTEGER:
+        if (matchOnly) {
+          query = new ConstantScoreQuery(FieldCacheRangeFilter.newIntRange(field.getName(),
+                min == null ? null : Integer.parseInt(min),
+                max == null ? null : Integer.parseInt(max),
+                minInclusive, maxInclusive));
+        } else {
+          query = NumericRangeQuery.newIntRange(field.getName(), ps,
                 min == null ? null : Integer.parseInt(min),
                 max == null ? null : Integer.parseInt(max),
                 minInclusive, maxInclusive);
+        }
         break;
       case FLOAT:
-        query = NumericRangeQuery.newFloatRange(field.getName(), ps,
+        if (matchOnly) {
+          query = new ConstantScoreQuery(FieldCacheRangeFilter.newFloatRange(field.getName(),
+                min == null ? null : Float.parseFloat(min),
+                max == null ? null : Float.parseFloat(max),
+                minInclusive, maxInclusive));
+        } else {
+          query = NumericRangeQuery.newFloatRange(field.getName(), ps,
                 min == null ? null : Float.parseFloat(min),
                 max == null ? null : Float.parseFloat(max),
                 minInclusive, maxInclusive);
+        }
         break;
       case LONG:
-        query = NumericRangeQuery.newLongRange(field.getName(), ps,
+        if (matchOnly) {
+          query = new ConstantScoreQuery(FieldCacheRangeFilter.newLongRange(field.getName(),
+                min == null ? null : Long.parseLong(min),
+                max == null ? null : Long.parseLong(max),
+                minInclusive, maxInclusive));
+        } else {
+          query = NumericRangeQuery.newLongRange(field.getName(), ps,
                 min == null ? null : Long.parseLong(min),
                 max == null ? null : Long.parseLong(max),
                 minInclusive, maxInclusive);
+        }
         break;
       case DOUBLE:
-        query = NumericRangeQuery.newDoubleRange(field.getName(), ps,
+        if (matchOnly) {
+          query = new ConstantScoreQuery(FieldCacheRangeFilter.newDoubleRange(field.getName(),
+                min == null ? null : Double.parseDouble(min),
+                max == null ? null : Double.parseDouble(max),
+                minInclusive, maxInclusive));
+        } else {
+          query = NumericRangeQuery.newDoubleRange(field.getName(), ps,
                 min == null ? null : Double.parseDouble(min),
                 max == null ? null : Double.parseDouble(max),
                 minInclusive, maxInclusive);
+        }
         break;
       case DATE:
-        query = NumericRangeQuery.newLongRange(field.getName(), ps,
+        if (matchOnly) {
+          query = new ConstantScoreQuery(FieldCacheRangeFilter.newLongRange(field.getName(),
+                min == null ? null : dateField.parseMath(null, min).getTime(),
+                max == null ? null : dateField.parseMath(null, max).getTime(),
+                minInclusive, maxInclusive));
+        } else {
+          query = NumericRangeQuery.newLongRange(field.getName(), ps,
                 min == null ? null : dateField.parseMath(null, min).getTime(),
                 max == null ? null : dateField.parseMath(null, max).getTime(),
                 minInclusive, maxInclusive);
+        }
         break;
       default:
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Unknown type for trie field");
     }
 
     return query;
+  }
+  
+  @Override
+  public Query getFieldQuery(QParser parser, SchemaField field, String externalVal) {
+    if (!field.indexed() && field.hasDocValues()) {
+      // currently implemented as singleton range
+      return getRangeQuery(parser, field, externalVal, externalVal, true, true);
+    } else {
+      return super.getFieldQuery(parser, field, externalVal);
+    }
   }
 
   @Deprecated
@@ -473,8 +549,9 @@ public class TrieField extends PrimitiveFieldType {
   public StorableField createField(SchemaField field, Object value, float boost) {
     boolean indexed = field.indexed();
     boolean stored = field.stored();
+    boolean docValues = field.hasDocValues();
 
-    if (!indexed && !stored) {
+    if (!indexed && !stored && !docValues) {
       if (log.isTraceEnabled())
         log.trace("Ignoring unindexed/unstored field: " + field);
       return null;
@@ -549,6 +626,36 @@ public class TrieField extends PrimitiveFieldType {
     return f;
   }
 
+  @Override
+  public List<StorableField> createFields(SchemaField sf, Object value, float boost) {
+    if (sf.hasDocValues()) {
+      List<StorableField> fields = new ArrayList<StorableField>();
+      final StorableField field = createField(sf, value, boost);
+      fields.add(field);
+      
+      if (sf.multiValued()) {
+        BytesRef bytes = new BytesRef();
+        readableToIndexed(value.toString(), bytes);
+        fields.add(new SortedSetDocValuesField(sf.getName(), bytes));
+      } else {
+        final long bits;
+        if (field.numericValue() instanceof Integer || field.numericValue() instanceof Long) {
+          bits = field.numericValue().longValue();
+        } else if (field.numericValue() instanceof Float) {
+          bits = Float.floatToIntBits(field.numericValue().floatValue());
+        } else {
+          assert field.numericValue() instanceof Double;
+          bits = Double.doubleToLongBits(field.numericValue().doubleValue());
+        }
+        fields.add(new NumericDocValuesField(sf.getName(), bits));
+      }
+      
+      return fields;
+    } else {
+      return Collections.singletonList(createField(sf, value, boost));
+    }
+  }
+
   public enum TrieTypes {
     INTEGER,
     LONG,
@@ -586,6 +693,13 @@ public class TrieField extends PrimitiveFieldType {
     }
     return null;
   }
+
+  @Override
+  public void checkSchemaField(final SchemaField field) {
+    if (field.hasDocValues() && !field.multiValued() && !(field.isRequired() || field.getDefaultValue() != null)) {
+      throw new IllegalStateException("Field " + this + " has single-valued doc values enabled, but has no default value and is not required");
+    }
+  }
 }
 
 class TrieDateFieldSource extends LongFieldSource {
@@ -605,14 +719,20 @@ class TrieDateFieldSource extends LongFieldSource {
   }
 
   @Override
-  public Object longToObject(long val) {
+  public Date longToObject(long val) {
     return new Date(val);
+  }
+
+  @Override
+  public String longToString(long val) {
+    return TrieField.dateField.toExternal(longToObject(val));
   }
 
   @Override
   public long externalToLong(String extVal) {
     return TrieField.dateField.parseMath(null, extVal).getTime();
   }
+
 }
 
 

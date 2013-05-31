@@ -27,7 +27,6 @@ import org.apache.solr.core.SolrCore;
 import org.apache.solr.core.SolrEventListener;
 import org.apache.solr.core.SolrInfoMBean;
 import org.apache.solr.schema.FieldType;
-import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.util.plugin.SolrCoreAware;
 import org.slf4j.Logger;
@@ -45,7 +44,6 @@ public abstract class UpdateHandler implements SolrInfoMBean {
   protected final static Logger log = LoggerFactory.getLogger(UpdateHandler.class);
 
   protected final SolrCore core;
-  protected final IndexSchema schema;
 
   protected final SchemaField idField;
   protected final FieldType idFieldType;
@@ -87,13 +85,15 @@ public abstract class UpdateHandler implements SolrInfoMBean {
   private void clearLog(PluginInfo ulogPluginInfo) {
     if (ulogPluginInfo == null) return;
     File tlogDir = UpdateLog.getTlogDir(core, ulogPluginInfo);
+    log.info("Clearing tlog files, tlogDir=" + tlogDir);
     if (tlogDir.exists()) {
       String[] files = UpdateLog.getLogList(tlogDir);
       for (String file : files) {
-        File f = new File(file);
+        File f = new File(tlogDir, file);
         boolean s = f.delete();
         if (!s) {
-          log.error("Could not remove tlog file:" + f);
+          log.error("Could not remove tlog file:" + f.getAbsolutePath());
+          //throw new SolrException(ErrorCode.SERVER_ERROR, "Could not remove tlog file:" + f.getAbsolutePath());
         }
       }
     }
@@ -118,16 +118,23 @@ public abstract class UpdateHandler implements SolrInfoMBean {
   }
 
   public UpdateHandler(SolrCore core)  {
+    this(core, null);
+  }
+  
+  public UpdateHandler(SolrCore core, UpdateLog updateLog)  {
     this.core=core;
-    schema = core.getSchema();
-    idField = schema.getUniqueKeyField();
+    idField = core.getLatestSchema().getUniqueKeyField();
     idFieldType = idField!=null ? idField.getType() : null;
     parseEventListeners();
     PluginInfo ulogPluginInfo = core.getSolrConfig().getPluginInfo(UpdateLog.class.getName());
     if (!core.isReloaded() && !core.getDirectoryFactory().isPersistent()) {
       clearLog(ulogPluginInfo);
     }
-    initLog(ulogPluginInfo);
+    if (updateLog == null) {
+      initLog(ulogPluginInfo);
+    } else {
+      this.ulog = updateLog;
+    }
   }
 
   /**
@@ -135,11 +142,10 @@ public abstract class UpdateHandler implements SolrInfoMBean {
    * all of the index files.
    * 
    * @param rollback IndexWriter if true else close
-   * @param forceNewDir Force a new Directory instance
    * 
    * @throws IOException If there is a low-level I/O error.
    */
-  public abstract void newIndexWriter(boolean rollback, boolean forceNewDir) throws IOException;
+  public abstract void newIndexWriter(boolean rollback) throws IOException;
 
   public abstract SolrCoreState getSolrCoreState();
 
