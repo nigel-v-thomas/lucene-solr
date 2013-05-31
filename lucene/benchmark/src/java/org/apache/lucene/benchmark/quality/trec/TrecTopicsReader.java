@@ -74,11 +74,23 @@ public class TrecTopicsReader {
         // title
         sb = read(reader,"<title>",null,true,false);
         k = sb.indexOf(">");
-        String title = sb.substring(k+1).trim();
-        // description
-        read(reader,"<desc>",null,false,false);
+        String titleFristLine = sb.substring(k+1).trim();
         sb.setLength(0);
+        sb.append(titleFristLine);
+        // Title can be multi line..
         String line = null;
+        while ((line = reader.readLine()) != null) {
+          if (line.startsWith("<desc>"))
+            break;
+          if (sb.length() > 0) sb.append(' ');
+          sb.append(line);
+        }
+        String title = sb.toString().trim();
+
+        // description
+        //read(reader,"<desc>",null,false,false);
+        sb.setLength(0);
+        //line = null;
         while ((line = reader.readLine()) != null) {
           if (line.startsWith("<narr>"))
             break;
